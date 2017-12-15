@@ -4,6 +4,9 @@ var request = require('request');
 var Alexa = require("alexa-sdk");
 var rp = require('request-promise');
 var appId = 'amzn1.ask.skill.256e5fa9-874f-4a1d-9cc4-ff91bdf403ac'; //'amzn1.echo-sdk-ams.app.your-skill-id';
+var countriesJson = require('./countries.json');
+var countries = JSON.parse(JSON.stringify(countriesJson));
+var countriesUsed = [];
 
 exports.handler = function(event, context, callback) {
     var alexa = Alexa.handler(event, context);
@@ -33,8 +36,8 @@ var newSessionHandlers = {
             this.attributes['gamesWon'] = 0;
         }
         this.handler.state = states.STARTMODE;
-        this.emit(':ask', 'Welcome to the word chain game. You have played '
-            + this.attributes['gamesPlayed'].toString() + ' times. would you like to play?',
+        countriesUsed = [];
+        this.emit(':ask', 'Welcome to the word chain game. Would you like to play?',
             'Say yes to start the game or no to quit.');
     },
     "AMAZON.StopIntent": function() {
@@ -61,8 +64,14 @@ var startGameHandlers = Alexa.CreateStateHandler(states.STARTMODE, {
     },
     'AMAZON.YesIntent': function() {
         //this.attributes["guessNumber"] = Math.floor(Math.random() * 100);
+        countriesUsed = [];
         this.handler.state = states.GAMEMODE;
-        this.attributes["word"] = 'table';
+        //this.attributes["word"] = 'table';
+        //get a country from list
+        var firstWord = getRandomCountry();
+        
+        this.attributes["word"] = firstWord;
+        countriesUsed.push(firstWord); //add word to used array
         this.emit(':ask', 'Game On!, You are going down. My word is ' + this.attributes["word"]);
     },
     'AMAZON.NoIntent': function() {
@@ -101,39 +110,70 @@ var gameModeHandlers = Alexa.CreateStateHandler(states.GAMEMODE, {
     },
     'WordGameIntent': function () {
         var inputWord = this.event.request.intent.slots.UpdateText.value;
-        var OriginalWord = this.attributes["word"];
+        var originalWord = this.attributes["word"];
+
+
+        //set both words to lower case
+        if (inputWord)
+            inputWord = inputWord.toLowerCase();
+        
+        if (originalWord)
+            originalWord = originalWord.toLowerCase();
         
         console.log('user said: ' + inputWord);
+
+        //first check that user did not respond with a country that has been used
+        if(countriesUsed.includes(inputWord)){
+            this.emit('WordHasBeenUsed', () => {
+                this.emit(':ask',  inputWord + ' has been used in this game, I Win. Would you like to play again?', 'Country has been used, I win. Say yes to start a new game, or no to end the game.');
+            });
+            return;
+        }
+       
         //check if last letter in original word matches firsl letter in input word
         var checkedPassed = false;
         
-        console.log('OriginalWord: ' + OriginalWord);
+        console.log('OriginalWord: ' + originalWord);
         console.log('inputWord: ' + inputWord);
-        if (inputWord && OriginalWord.toString().substring(OriginalWord.toString().length-1) == inputWord.toString().substring(0,1)){
+        if (inputWord && originalWord.toString().substring(originalWord.toString().length-1) == inputWord.toString().substring(0,1)){
             checkedPassed = true;
         }
         console.log('checkedPassed: ' + checkedPassed);
 
         if(checkedPassed){
+            countriesUsed.push(inputWord.toString());
             this.emit('Correct', () => {
                 var inputLastLetter = inputWord.toString().substring(inputWord.toString().length-1);
+                var smartReply = correctReplies[parseInt((Math.random() * correctReplies.length))];
                 // console.log(inputLastLetter);
                 // var newWord = 'game';
                 //this.attributes["word"] = newWord;
-                rp('https://api.datamuse.com/words?sp=' + inputLastLetter + '*').promise().bind(this)
-                    .then((body) => {
-                        var smartReply = correctReplies[parseInt((Math.random() * 10) % correctReplies.length)];
-                        console.log(smartReply);
-                        console.log(correctReplies);
-                        var data = JSON.parse(body);
-                        var newWord = data[parseInt((Math.random() * 10) % data.length)].word;
-                        this.attributes["word"] = newWord.toString();
-                        this.emit(':ask', smartReply + ', My next word is ' + newWord, 'my word is ' + newWord);
-                    })
-                    .catch(function (err) {
-                        console.log(err);
-                    });
+                // rp('https://api.datamuse.com/words?sp=' + inputLastLetter + '*').promise().bind(this)
+                //     .then((body) => {
+                //         var smartReply = correctReplies[parseInt((Math.random() * 10) % correctReplies.length)];
+                //         console.log(smartReply);
+                //         console.log(correctReplies);
+                //         var data = JSON.parse(body);
+                //         var newWord = data[parseInt((Math.random() * 10) % data.length)].word;
+                //         this.attributes["word"] = newWord.toString();
+                //         this.emit(':ask', smartReply + ', My next word is ' + newWord, 'my word is ' + newWord);
+                //     })
+                //     .catch(function (err) {
+                //         console.log(err);
+                //     });
                 //this.emit(':ask', 'what a smart ass, My next word is ' + 'test', 'my word is ' + 'test');
+                var newWord = getCountryByFirstLetter(inputLastLetter);
+
+                if (!newWord) {
+                    this.emit('Won', () => {
+                        this.emit(':tell', 'OMG, You Won!. Do you want to play again?', 'You won, Do you want to play again?');
+                    });
+                    return;
+                }
+
+                countriesUsed.push(newWord.toLowerCase());
+                this.attributes["word"] = newWord;
+                this.emit(':ask', smartReply + ', My next word is ' + newWord, 'my word is ' + newWord);
                 console.log('End of correct emit');
             });
         }
@@ -141,7 +181,7 @@ var gameModeHandlers = Alexa.CreateStateHandler(states.GAMEMODE, {
             this.emit('Wrong', () => {
                 this.emit(':ask', 'Haha ' + inputWord.toString() + ' is Wrong! Do not worry, there are more important things in life than winning or losing a game. You lost though. LOL. Would you like to play again?',
                 'Say yes to start a new game, or no to end the game.');
-            })
+            });
         } else {
             this.emit('NotAWord');
         }
@@ -177,9 +217,72 @@ var guessAttemptHandlers = {
     'Wrong': function(callback) {
         this.handler.state = states.STARTMODE;
         this.attributes['gamesPlayed']++;
+        countriesUsed = [];
+        callback();
+    },
+    'WordHasBeenUsed': function(callback) {
+        this.handler.state = states.STARTMODE;
+        this.attributes['gamesPlayed']++;
+        countriesUsed = [];
+        callback();
+    },
+    'Won': function(callback) {
+        this.handler.state = states.STARTMODE;
+        this.attributes['gamesPlayed']++;
+        countriesUsed = [];
         callback();
     },
     'NotAWord': function() {
-        this.emit(':ask', 'Sorry, I didn\'t get that. Try saying a word.', 'Try saying a word.');
+        this.emit(':ask', 'Sorry, I didn\'t get that. Try saying a country.', 'Try saying a country.');
     }
+};
+
+var getRandomCountry = function(){
+    return getCountryByIndex(parseInt(Math.random() * countries.length));
+};
+
+var getCountryByIndex = function(index){
+    var country = countries[index].name;
+
+    if (country.indexOf(',') > -1)
+        country = country.substring(0, country.indexOf(','));
+    
+    return country.toLowerCase();
+};
+
+var getCountryByFirstLetter = function(letter){
+    var country_list = getAllCountriesWithLetter(letter);
+    country_list = removeUsedCountries(country_list);
+
+    var country = '';
+
+    if(country_list.length > 0)
+        country = country_list[parseInt(Math.random() * country_list.length)];
+
+    return country;
+};
+
+var getAllCountriesWithLetter = function(letter){
+    var country_list = [];
+
+    countries.forEach(function(country) {
+        if(country.name[0].toLowerCase() == letter.toLowerCase())
+            country_list.push(country.name.toLowerCase());
+    }, this);
+
+    return country_list;
+};
+
+var removeUsedCountries = function(country_list){
+
+    for(var i = 0; i < country_list.length; )
+    {
+        if(countriesUsed.includes(country_list[i])){
+            country_list.splice(i, 1);
+            continue;
+        }
+        i++;
+    }
+
+    return country_list;
 };
